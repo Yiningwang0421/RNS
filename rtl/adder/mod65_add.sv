@@ -5,14 +5,17 @@ module mod65_add (
 );
 
     logic [7:0] sum;
+    logic [7:0] sum_minus_65;
 
     always_comb begin
         sum = a + b;
+        sum_minus_65 = sum - 8'd65;
 
         if (sum >= 8'd65)
-            y = sum - 8'd65;
+            y = sum_minus_65[6:0];
         else
             y = sum[6:0];
     end
 
 endmodule
+
