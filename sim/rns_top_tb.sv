@@ -16,16 +16,18 @@ module rns_top_tb;
     logic reset_n;
     logic valid_in;
     logic [1:0] op_sel;
-    logic [15:0] a_bin;
-    logic [15:0] b_bin;
+    logic signed [15:0] a_bin;
+    logic signed [15:0] b_bin;
 
     logic valid_out;
     logic [17:0] y_bin;
+    logic signed [17:0] y_signed;
     logic [5:0] y63;
     logic [5:0] y64;
     logic [6:0] y65;
 
     logic [17:0] golden_bin;
+    logic signed [17:0] golden_signed;
     logic [5:0] golden_r63;
     logic [5:0] golden_r64;
     logic [6:0] golden_r65;
@@ -39,6 +41,7 @@ module rns_top_tb;
         .b_bin     (b_bin),
         .valid_out (valid_out),
         .y_bin     (y_bin),
+        .y_signed  (y_signed),
         .y63       (y63),
         .y64       (y64),
         .y65       (y65)
@@ -49,18 +52,20 @@ module rns_top_tb;
         .a     (a_bin),
         .b     (b_bin),
         .y_bin (golden_bin),
+        .y_signed (golden_signed),
         .y63   (golden_r63),
         .y64   (golden_r64),
         .y65   (golden_r65)
     );
 
     logic [17:0] expected_bin_q[$];
+    logic signed [17:0] expected_signed_q[$];
     logic [5:0] expected_r63_q[$];
     logic [5:0] expected_r64_q[$];
     logic [6:0] expected_r65_q[$];
     logic [1:0] expected_op_q[$];
-    logic [15:0] expected_a_q[$];
-    logic [15:0] expected_b_q[$];
+    logic signed [15:0] expected_a_q[$];
+    logic signed [15:0] expected_b_q[$];
     integer expected_id_q[$];
     integer expected_cycle_q[$];
 
@@ -83,32 +88,32 @@ module rns_top_tb;
     integer seed;
     integer seed_dummy;
 
-    function automatic integer operand_bin(input logic [15:0] value);
+    function automatic integer operand_bin(input logic signed [15:0] value);
         begin
-            if (value == 16'd0)
+            if (value == -32768)
                 operand_bin = 0;
-            else if (value == 16'd1)
+            else if (value < 0)
                 operand_bin = 1;
-            else if (value <= 16'd255)
+            else if (value == 0)
                 operand_bin = 2;
-            else if (value <= 16'd32767)
+            else if (value == 1)
                 operand_bin = 3;
-            else if (value < 16'hffff)
+            else if (value < 32767)
                 operand_bin = 4;
             else
                 operand_bin = 5;
         end
     endfunction
 
-    function automatic logic [15:0] random_from_bin(input integer bin_index);
+    function automatic logic signed [15:0] random_from_bin(input integer bin_index);
         begin
             case (bin_index)
-                0: random_from_bin = 16'd0;
-                1: random_from_bin = 16'd1;
-                2: random_from_bin = $urandom_range(2, 255);
-                3: random_from_bin = $urandom_range(256, 32767);
-                4: random_from_bin = $urandom_range(32768, 65534);
-                default: random_from_bin = 16'hffff;
+                0: random_from_bin = -32768;
+                1: random_from_bin = -$signed($urandom_range(1, 32767));
+                2: random_from_bin = 0;
+                3: random_from_bin = 1;
+                4: random_from_bin = $urandom_range(2, 32766);
+                default: random_from_bin = 32767;
             endcase
         end
     endfunction
@@ -126,8 +131,8 @@ module rns_top_tb;
 
     task automatic sample_coverage(
         input logic [1:0] op,
-        input logic [15:0] a,
-        input logic [15:0] b,
+        input logic signed [15:0] a,
+        input logic signed [15:0] b,
         input logic [17:0] result,
         input logic [5:0] result63,
         input logic [5:0] result64,
@@ -136,12 +141,12 @@ module rns_top_tb;
     );
         integer a_category;
         integer b_category;
-        logic [16:0] wide_sum;
-        logic [31:0] wide_product;
+        integer signed wide_sum;
+        integer signed wide_product;
         begin
             a_category = operand_bin(a);
             b_category = operand_bin(b);
-            wide_sum = {1'b0, a} + {1'b0, b};
+            wide_sum = a + b;
             wide_product = a * b;
 
             op_hits[op]++;
@@ -167,13 +172,19 @@ module rns_top_tb;
             if (result65 == 1) residue_edge_hits[7]++;
             if (result65 == 64) residue_edge_hits[8]++;
 
-            if ((op == OpAdd) && (wide_sum > 17'h0ffff)) special_hits[0]++;
+            if ((op == OpAdd) &&
+                ((wide_sum > 32767) || (wide_sum < -32768))) special_hits[0]++;
             if ((op == OpSub) && (a < b)) special_hits[1]++;
             if ((op == OpSub) && (a == b)) special_hits[2]++;
             if ((op == OpMul) && ((a == 0) || (b == 0))) special_hits[3]++;
-            if ((op == OpMul) && ((a == 1) || (b == 1))) special_hits[4]++;
-            if ((op == OpMul) && (wide_product >= ModN)) special_hits[5]++;
-            if ((op == OpMul) && (wide_product < ModN) && (a != 0) && (b != 0))
+            if ((op == OpMul) &&
+                ((a == 1) || (b == 1) || (a == -1) || (b == -1)))
+                special_hits[4]++;
+            if ((op == OpMul) &&
+                ((wide_product >= 262080) || (wide_product <= -262080)))
+                special_hits[5]++;
+            if ((op == OpMul) && (wide_product < 262080) &&
+                (wide_product > -262080) && (a != 0) && (b != 0))
                 special_hits[6]++;
             if (op == OpPassA) special_hits[7]++;
         end
@@ -181,8 +192,8 @@ module rns_top_tb;
 
     task automatic drive_transaction(
         input logic [1:0] op,
-        input logic [15:0] a,
-        input logic [15:0] b,
+        input logic signed [15:0] a,
+        input logic signed [15:0] b,
         input integer scenario
     );
         begin
@@ -195,6 +206,7 @@ module rns_top_tb;
 
             transaction_count++;
             expected_bin_q.push_back(golden_bin);
+            expected_signed_q.push_back(golden_signed);
             expected_r63_q.push_back(golden_r63);
             expected_r64_q.push_back(golden_r64);
             expected_r65_q.push_back(golden_r65);
@@ -209,24 +221,24 @@ module rns_top_tb;
             );
 
             $display(
-                "[drive %0d] %0s a=%0d b=%0d -> golden=%0d r63=%0d r64=%0d r65=%0d",
-                transaction_count, op_name(op), a, b, golden_bin,
+                "[drive %0d] %0s a=%0d b=%0d -> signed=%0d canonical=%0d r63=%0d r64=%0d r65=%0d",
+                transaction_count, op_name(op), a, b, golden_signed, golden_bin,
                 golden_r63, golden_r64, golden_r65
             );
 
             case (op)
                 OpAdd:
-                    $display("[meaning %0d] %0d + %0d = %0d (mod %0d)",
-                             transaction_count, a, b, golden_bin, ModN);
+                    $display("[meaning %0d] %0d + %0d -> signed %0d, canonical %0d",
+                             transaction_count, a, b, golden_signed, golden_bin);
                 OpSub:
-                    $display("[meaning %0d] %0d - %0d = %0d (mod %0d)",
-                             transaction_count, a, b, golden_bin, ModN);
+                    $display("[meaning %0d] %0d - %0d -> signed %0d, canonical %0d",
+                             transaction_count, a, b, golden_signed, golden_bin);
                 OpMul:
-                    $display("[meaning %0d] %0d * %0d = %0d (mod %0d)",
-                             transaction_count, a, b, golden_bin, ModN);
+                    $display("[meaning %0d] %0d * %0d -> signed %0d, canonical %0d",
+                             transaction_count, a, b, golden_signed, golden_bin);
                 default:
-                    $display("[meaning %0d] PASS A returns %0d; b=%0d is ignored",
-                             transaction_count, golden_bin, b);
+                    $display("[meaning %0d] PASS A returns signed %0d (canonical %0d); b=%0d is ignored",
+                             transaction_count, golden_signed, golden_bin, b);
             endcase
         end
     endtask
@@ -250,30 +262,33 @@ module rns_top_tb;
             $display("[scenario] directed arithmetic and boundary cases");
 
             drive_transaction(OpAdd, 0, 0, 0);
-            drive_transaction(OpAdd, 1, 0, 0);
-            drive_transaction(OpAdd, 16'hffff, 16'hffff, 0);
-            drive_transaction(OpAdd, 16'hffff, 1, 0);
+            drive_transaction(OpAdd, -1, 1, 0);
+            drive_transaction(OpAdd, 32767, 1, 0);
+            drive_transaction(OpAdd, -32768, -1, 0);
+            drive_transaction(OpAdd, -12345, 23456, 0);
 
             drive_transaction(OpSub, 0, 0, 0);
             drive_transaction(OpSub, 0, 1, 0);
-            drive_transaction(OpSub, 1, 0, 0);
-            drive_transaction(OpSub, 16'hffff, 16'hffff, 0);
+            drive_transaction(OpSub, 0, -1, 0);
+            drive_transaction(OpSub, -32768, 32767, 0);
+            drive_transaction(OpSub, 32767, -32768, 0);
 
-            drive_transaction(OpMul, 0, 16'hffff, 0);
-            drive_transaction(OpMul, 1, 16'hffff, 0);
-            drive_transaction(OpMul, 2, 2, 0);
-            drive_transaction(OpMul, 16'hffff, 16'hffff, 0);
+            drive_transaction(OpMul, 0, -32768, 0);
+            drive_transaction(OpMul, 1, -32768, 0);
+            drive_transaction(OpMul, -1, -1, 0);
+            drive_transaction(OpMul, -2, 3, 0);
+            drive_transaction(OpMul, -32768, 32767, 0);
 
-            drive_transaction(OpPassA, 0, 16'hffff, 0);
+            drive_transaction(OpPassA, 0, -1, 0);
             drive_transaction(OpPassA, 1, 123, 0);
-            drive_transaction(OpPassA, 62, 0, 0);
+            drive_transaction(OpPassA, -1, 0, 0);
+            drive_transaction(OpPassA, -32768, 0, 0);
+            drive_transaction(OpPassA, 32767, 0, 0);
             drive_transaction(OpPassA, 63, 0, 0);
             drive_transaction(OpPassA, 64, 0, 0);
-            drive_transaction(OpPassA, 65, 0, 0);
-            drive_transaction(OpPassA, 16'hffff, 0, 0);
 
             for (op_index = 0; op_index < 4; op_index++)
-                drive_transaction(op_index[1:0], 16'd32768, 16'd32768, 0);
+                drive_transaction(op_index[1:0], -32768, -32768, 0);
         end
     endtask
 
@@ -302,28 +317,28 @@ module rns_top_tb;
         integer index;
         integer constraint_kind;
         logic [1:0] op;
-        logic [15:0] a;
-        logic [15:0] b;
+        logic signed [15:0] a;
+        logic signed [15:0] b;
         begin
             $display("[scenario] %0d constrained-random transactions", count);
             for (index = 0; index < count; index++) begin
                 constraint_kind = $urandom_range(2, 9);
                 op = $urandom_range(0, 3);
-                a = $urandom;
-                b = $urandom;
+                a = $signed($urandom);
+                b = $signed($urandom);
 
                 case (constraint_kind)
                     2: begin
-                        a = $urandom;
+                        a = $signed($urandom);
                         b = a;
                     end
                     3: begin
-                        a = $urandom_range(0, 65534);
-                        b = $urandom_range(a + 1, 65535);
+                        a = -$signed($urandom_range(1, 32768));
+                        b = $urandom_range(0, 32767);
                     end
                     4: begin
-                        a = $urandom_range(1, 65535);
-                        b = $urandom_range(0, a - 1);
+                        a = $urandom_range(0, 32767);
+                        b = -$signed($urandom_range(1, 32768));
                     end
                     5: begin
                         if ($urandom_range(0, 1) == 0)
@@ -332,29 +347,36 @@ module rns_top_tb;
                             b = 0;
                     end
                     6: begin
-                        case ($urandom_range(0, 5))
-                            0: a = 16'd62;
-                            1: a = 16'd63;
-                            2: a = 16'd64;
-                            3: a = 16'd65;
-                            4: a = 16'hfffe;
-                            default: a = 16'hffff;
+                        case ($urandom_range(0, 7))
+                            0: a = -32768;
+                            1: a = -32767;
+                            2: a = -1;
+                            3: a = 0;
+                            4: a = 1;
+                            5: a = 63;
+                            6: a = 64;
+                            default: a = 32767;
                         endcase
                     end
                     7: begin
                         op = OpMul;
-                        a = $urandom_range(32768, 65535);
-                        b = $urandom_range(32768, 65535);
+                        a = -$signed($urandom_range(16384, 32768));
+                        b = $urandom_range(16384, 32767);
                     end
                     8: begin
                         op = OpSub;
-                        a = $urandom_range(0, 32767);
-                        b = $urandom_range(32768, 65535);
+                        a = -$signed($urandom_range(1, 32768));
+                        b = $urandom_range(0, 32767);
                     end
                     default: begin
                         op = OpAdd;
-                        a = $urandom_range(32768, 65535);
-                        b = $urandom_range(32768, 65535);
+                        if ($urandom_range(0, 1) == 0) begin
+                            a = $urandom_range(20000, 32767);
+                            b = $urandom_range(20000, 32767);
+                        end else begin
+                            a = -$signed($urandom_range(20000, 32768));
+                            b = -$signed($urandom_range(20000, 32768));
+                        end
                     end
                 endcase
 
@@ -427,7 +449,7 @@ module rns_top_tb;
             $display("[coverage] residue edge values: %0d/9 bins", residue_covered);
             $display("[coverage] arithmetic special cases: %0d/8 bins", special_covered);
             $display(
-                "[coverage-detail] add_carry=%0d sub_underflow=%0d sub_equal=%0d mul_zero=%0d mul_identity=%0d mul_wrap=%0d mul_no_wrap=%0d pass_a=%0d",
+                "[coverage-detail] signed_add_overflow=%0d sub_negative=%0d sub_equal=%0d mul_zero=%0d mul_identity=%0d mul_wrap=%0d mul_no_wrap=%0d pass_a=%0d",
                 special_hits[0], special_hits[1], special_hits[2], special_hits[3],
                 special_hits[4], special_hits[5], special_hits[6], special_hits[7]
             );
@@ -564,12 +586,13 @@ module rns_top_tb;
 
     initial begin : monitor_and_scoreboard
         logic [17:0] expected_bin;
+        logic signed [17:0] expected_signed;
         logic [5:0] expected_r63;
         logic [5:0] expected_r64;
         logic [6:0] expected_r65;
         logic [1:0] expected_op;
-        logic [15:0] expected_a;
-        logic [15:0] expected_b;
+        logic signed [15:0] expected_a;
+        logic signed [15:0] expected_b;
         integer expected_id;
         integer expected_cycle;
 
@@ -586,6 +609,7 @@ module rns_top_tb;
             end else if ((expected_cycle_q.size() > 0) &&
                          (expected_cycle_q[0] == cycle_count)) begin
                 expected_bin = expected_bin_q.pop_front();
+                expected_signed = expected_signed_q.pop_front();
                 expected_r63 = expected_r63_q.pop_front();
                 expected_r64 = expected_r64_q.pop_front();
                 expected_r65 = expected_r65_q.pop_front();
@@ -603,21 +627,23 @@ module rns_top_tb;
                     $display("[scoreboard] FAIL id=%0d cycle=%0d: valid_out=0",
                              expected_id, expected_cycle);
                 end else if ((y_bin !== expected_bin) ||
+                             (y_signed !== expected_signed) ||
                              (y63 !== expected_r63) ||
                              (y64 !== expected_r64) ||
                              (y65 !== expected_r65)) begin
                     error_count++;
                     op_failed[expected_op]++;
                     $display(
-                        "[scoreboard] FAIL id=%0d %0s a=%0d b=%0d got=(%0d,%0d,%0d,%0d) expected=(%0d,%0d,%0d,%0d)",
+                        "[scoreboard] FAIL id=%0d %0s a=%0d b=%0d got_signed=%0d got=(%0d,%0d,%0d,%0d) expected_signed=%0d expected=(%0d,%0d,%0d,%0d)",
                         expected_id, op_name(expected_op), expected_a, expected_b,
-                        y_bin, y63, y64, y65,
-                        expected_bin, expected_r63, expected_r64, expected_r65
+                        y_signed, y_bin, y63, y64, y65,
+                        expected_signed, expected_bin,
+                        expected_r63, expected_r64, expected_r65
                     );
                 end else begin
-                    $display("[check %0d] PASS id=%0d %0s result=%0d residues=(%0d,%0d,%0d)",
+                    $display("[check %0d] PASS id=%0d %0s signed=%0d canonical=%0d residues=(%0d,%0d,%0d)",
                              checked_count, expected_id, op_name(expected_op),
-                             y_bin, y63, y64, y65);
+                             y_signed, y_bin, y63, y64, y65);
                 end
             end else if (valid_out !== 1'b0) begin
                 error_count++;

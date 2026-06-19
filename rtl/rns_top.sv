@@ -4,11 +4,12 @@ module rns_top (
     input  logic        valid_in,
 
     input  logic [1:0]  op_sel,
-    input  logic [15:0] a_bin,
-    input  logic [15:0] b_bin,
+    input  logic signed [15:0] a_bin,
+    input  logic signed [15:0] b_bin,
 
     output logic        valid_out,
     output logic [17:0] y_bin,
+    output logic signed [17:0] y_signed,
 
     output logic [5:0]  y63,
     output logic [5:0]  y64,
@@ -216,6 +217,11 @@ module rns_top (
         y63       = y63_s3;
         y64       = y64_s3;
         y65       = y65_s3;
+
+        if (y_bin >= 18'd131040)
+            y_signed = $signed({1'b0, y_bin}) - 19'sd262080;
+        else
+            y_signed = $signed(y_bin);
     end
 
 endmodule

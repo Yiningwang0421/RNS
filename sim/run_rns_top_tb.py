@@ -12,30 +12,6 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-SOURCES = [
-    "rtl/adder/mod63_add.sv",
-    "rtl/adder/mod64_add.sv",
-    "rtl/adder/mod65_add.sv",
-    "rtl/adder/rns_add_63_64_65.sv",
-    "rtl/substractor/mod63_sub.sv",
-    "rtl/substractor/mod64_sub.sv",
-    "rtl/substractor/mod65_sub.sv",
-    "rtl/substractor/rns_sub_63_64_65.sv",
-    "rtl/multiplication/csa/csa_circular.sv",
-    "rtl/multiplication/csa/mod64/mod64_multiply.sv",
-    "rtl/multiplication/mod63/mod63_add_final.sv",
-    "rtl/multiplication/mod63/mod63_reduce_7bit .sv",
-    "rtl/multiplication/mod63/mod63_multiply.sv",
-    "rtl/multiplication/mod65/mod65_multiply.sv",
-    "rtl/mod_section/mod_63_64_65_precompute.sv",
-    "rtl/mod_section/mod_63_64_65_correct.sv",
-    "rtl/mod_section/mod_63_64_65_pipe.sv",
-    "rtl/convert_back/rns_63_64_65_to_binary_pipe.sv",
-    "rtl/rns_top.sv",
-    "sim/rns_golden_model.sv",
-    "sim/rns_top_tb.sv",
-]
-
 SUMMARY_PATTERN = re.compile(
     r"^(\[config|\[scenario|\[drive|\[meaning|\[check|\[scoreboard|\[coverage|\[result\]|FAIL|PASS)"
 )
@@ -66,6 +42,23 @@ def write_summary(summary_file: Path, full_log: str) -> None:
 def resolve_from_project(value: str) -> Path:
     path = Path(value).expanduser()
     return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+def discover_sources() -> list[Path]:
+    rtl_sources = sorted((PROJECT_ROOT / "rtl").rglob("*.sv"))
+    simulation_sources = [
+        PROJECT_ROOT / "sim" / "rns_golden_model.sv",
+        PROJECT_ROOT / "sim" / "rns_top_tb.sv",
+    ]
+
+    missing = [path for path in simulation_sources if not path.is_file()]
+    if missing:
+        names = ", ".join(str(path) for path in missing)
+        raise FileNotFoundError(f"Required simulation source(s) missing: {names}")
+    if not rtl_sources:
+        raise FileNotFoundError("No SystemVerilog sources were found under rtl.")
+
+    return [*rtl_sources, *simulation_sources]
 
 
 def resolve_tool(explicit_path: str | None, command: str) -> str | None:
@@ -162,7 +155,12 @@ def main() -> int:
         )
         return 2
 
-    source_paths = [str(PROJECT_ROOT / source) for source in SOURCES]
+    try:
+        source_paths = [str(path) for path in discover_sources()]
+    except FileNotFoundError as error:
+        write_summary(summary_file, f"FAIL: {error}\n")
+        print(f"FAIL: {error}", file=sys.stderr)
+        return 2
     compile_command = [
         iverilog,
         "-g2012",
