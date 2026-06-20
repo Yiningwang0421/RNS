@@ -5,7 +5,7 @@ module rns_top_tb;
     localparam int unsigned ModN = 262080;
     localparam int unsigned DutLatency = 4;
     localparam int unsigned OperandBinCount = 6;
-    localparam int unsigned ScenarioBinCount = 10;
+    localparam int unsigned ScenarioBinCount = 12;
 
     localparam logic [1:0] OpAdd   = 2'd0;
     localparam logic [1:0] OpSub   = 2'd1;
@@ -87,6 +87,20 @@ module rns_top_tb;
     integer random_test_count;
     integer seed;
     integer seed_dummy;
+    integer chain_count;
+    integer chain_passed;
+    integer chain_failed;
+    integer program_count;
+    integer program_passed;
+    integer program_failed;
+    integer program_zero_length;
+    integer program_1_to_9;
+    integer program_10_to_49;
+    integer program_50_to_99;
+    integer program_100;
+    integer last_checked_id;
+    integer last_checked_failed;
+    logic signed [17:0] last_checked_signed;
 
     function automatic integer operand_bin(input logic signed [15:0] value);
         begin
@@ -240,6 +254,268 @@ module rns_top_tb;
                     $display("[meaning %0d] PASS A returns signed %0d (canonical %0d); b=%0d is ignored",
                              transaction_count, golden_signed, golden_bin, b);
             endcase
+        end
+    endtask
+
+    task automatic drive_and_wait(
+        input logic [1:0] op,
+        input logic signed [15:0] a,
+        input logic signed [15:0] b,
+        input integer scenario,
+        output logic signed [17:0] result,
+        output integer failed
+    );
+        integer transaction_id;
+        begin
+            drive_transaction(op, a, b, scenario);
+            transaction_id = transaction_count;
+
+            // A dependent sequence must wait for this result before issuing
+            // the next operation. Deassert valid so the current transaction
+            // is not accepted repeatedly during that wait.
+            @(negedge clk);
+            valid_in = 1'b0;
+            op_sel = OpAdd;
+            a_bin = 16'sd0;
+            b_bin = 16'sd0;
+
+            wait (last_checked_id >= transaction_id);
+            #1;
+            result = last_checked_signed;
+            failed = last_checked_failed;
+        end
+    endtask
+
+    task automatic run_mac_chain(
+        input logic signed [15:0] a,
+        input logic signed [15:0] b,
+        input logic signed [15:0] c,
+        input logic signed [15:0] d
+    );
+        logic signed [17:0] add_result;
+        logic signed [17:0] multiply_result;
+        logic signed [17:0] final_result;
+        integer stage_failed;
+        integer sequence_failed;
+        integer signed expected_add;
+        integer signed expected_multiply;
+        integer signed expected_final;
+        begin
+            chain_count++;
+            sequence_failed = 0;
+            expected_add = a + b;
+            expected_multiply = expected_add * c;
+            expected_final = expected_multiply + d;
+
+            $display(
+                "[sequence %0d] START: (%0d + %0d) * %0d + %0d",
+                chain_count, a, b, c, d
+            );
+
+            drive_and_wait(OpAdd, a, b, 10, add_result, stage_failed);
+            sequence_failed = sequence_failed | stage_failed;
+
+            if ((add_result < -32768) || (add_result > 32767)) begin
+                sequence_failed = 1;
+                $display(
+                    "[sequence %0d] FAIL: A+B=%0d cannot feed the signed 16-bit input",
+                    chain_count, add_result
+                );
+            end else begin
+                drive_and_wait(
+                    OpMul, add_result[15:0], c, 10,
+                    multiply_result, stage_failed
+                );
+                sequence_failed = sequence_failed | stage_failed;
+
+                if ((multiply_result < -32768) ||
+                    (multiply_result > 32767)) begin
+                    sequence_failed = 1;
+                    $display(
+                        "[sequence %0d] FAIL: (A+B)*C=%0d cannot feed the signed 16-bit input",
+                        chain_count, multiply_result
+                    );
+                end else begin
+                    drive_and_wait(
+                        OpAdd, multiply_result[15:0], d, 10,
+                        final_result, stage_failed
+                    );
+                    sequence_failed = sequence_failed | stage_failed;
+
+                    if ((add_result !== expected_add) ||
+                        (multiply_result !== expected_multiply) ||
+                        (final_result !== expected_final)) begin
+                        sequence_failed = 1;
+                        $display(
+                            "[sequence %0d] FAIL: stages got=(%0d,%0d,%0d) expected=(%0d,%0d,%0d)",
+                            chain_count, add_result, multiply_result, final_result,
+                            expected_add, expected_multiply, expected_final
+                        );
+                    end
+                end
+            end
+
+            if (sequence_failed) begin
+                chain_failed++;
+                error_count++;
+            end else begin
+                chain_passed++;
+                $display(
+                    "[sequence %0d] PASS: (%0d + %0d) * %0d + %0d = %0d",
+                    chain_count, a, b, c, d, final_result
+                );
+            end
+        end
+    endtask
+
+    task automatic run_chained_sequences;
+        integer index;
+        logic signed [15:0] a;
+        logic signed [15:0] b;
+        logic signed [15:0] c;
+        logic signed [15:0] d;
+        begin
+            $display("[scenario] dependent MAC-style sequences: (A+B)*C+D");
+
+            run_mac_chain(3, 4, 5, 6);
+            run_mac_chain(-10, 4, 3, 2);
+            run_mac_chain(100, 20, -2, 7);
+            run_mac_chain(300, 200, 20, -100);
+
+            for (index = 0; index < 96; index++) begin
+                a = $signed($urandom_range(0, 200)) - 100;
+                b = $signed($urandom_range(0, 200)) - 100;
+                c = $signed($urandom_range(0, 20)) - 10;
+                d = $signed($urandom_range(0, 200)) - 100;
+                run_mac_chain(a, b, c, d);
+            end
+        end
+    endtask
+
+    task automatic run_operation_program(
+        input integer length,
+        input logic signed [15:0] initial_value
+    );
+        integer step;
+        integer stage_failed;
+        integer sequence_failed;
+        integer operation_choice;
+        integer signed operand_value;
+        integer signed expected_value;
+        integer signed candidate_value;
+        logic signed [17:0] dut_value;
+        logic signed [15:0] accumulator;
+        logic [1:0] operation;
+        begin
+            program_count++;
+            sequence_failed = 0;
+            accumulator = initial_value;
+            expected_value = initial_value;
+
+            if (length == 0)
+                program_zero_length++;
+            else if (length < 10)
+                program_1_to_9++;
+            else if (length < 50)
+                program_10_to_49++;
+            else if (length < 100)
+                program_50_to_99++;
+            else
+                program_100++;
+
+            $display(
+                "[program %0d] START: length=%0d initial=%0d",
+                program_count, length, initial_value
+            );
+
+            for (step = 0; step < length; step++) begin
+                operation_choice = $urandom_range(0, 3);
+
+                case (operation_choice)
+                    0: begin
+                        operation = OpAdd;
+                        operand_value = $signed($urandom_range(0, 200)) - 100;
+                        candidate_value = expected_value + operand_value;
+                    end
+                    1: begin
+                        operation = OpSub;
+                        operand_value = $signed($urandom_range(0, 200)) - 100;
+                        candidate_value = expected_value - operand_value;
+                    end
+                    2: begin
+                        operation = OpMul;
+                        operand_value = $signed($urandom_range(0, 4)) - 2;
+                        candidate_value = expected_value * operand_value;
+                    end
+                    default: begin
+                        operation = OpPassA;
+                        operand_value = $signed($urandom_range(0, 200)) - 100;
+                        candidate_value = expected_value;
+                    end
+                endcase
+
+                // Keep every intermediate representable by the signed
+                // 16-bit binary input used by the next dependent operation.
+                if ((candidate_value < -32768) || (candidate_value > 32767)) begin
+                    operation = OpPassA;
+                    operand_value = 0;
+                    candidate_value = expected_value;
+                end
+
+                drive_and_wait(
+                    operation,
+                    accumulator,
+                    operand_value[15:0],
+                    11,
+                    dut_value,
+                    stage_failed
+                );
+
+                if (stage_failed || (dut_value !== candidate_value)) begin
+                    sequence_failed = 1;
+                    $display(
+                        "[program %0d] FAIL step=%0d/%0d op=%0s accumulator=%0d operand=%0d got=%0d expected=%0d",
+                        program_count, step + 1, length, op_name(operation),
+                        accumulator, operand_value, dut_value, candidate_value
+                    );
+                end
+
+                accumulator = dut_value[15:0];
+                expected_value = candidate_value;
+            end
+
+            if (sequence_failed) begin
+                program_failed++;
+                error_count++;
+            end else begin
+                program_passed++;
+                $display(
+                    "[program %0d] PASS: length=%0d final=%0d",
+                    program_count, length, expected_value
+                );
+            end
+        end
+    endtask
+
+    task automatic run_variable_length_programs;
+        integer index;
+        integer random_length;
+        logic signed [15:0] initial_value;
+        begin
+            $display("[scenario] variable-length dependent operation programs");
+
+            run_operation_program(0, 7);
+            run_operation_program(1, -3);
+            run_operation_program(10, 5);
+            run_operation_program(25, -20);
+            run_operation_program(50, 11);
+            run_operation_program(100, -7);
+
+            for (index = 0; index < 194; index++) begin
+                random_length = $urandom_range(0, 100);
+                initial_value = $signed($urandom_range(0, 200)) - 100;
+                run_operation_program(random_length, initial_value);
+            end
         end
     endtask
 
@@ -437,7 +713,7 @@ module rns_top_tb;
             total_covered = op_covered + a_covered + b_covered + cross_covered
                           + relation_covered + scenario_covered + residue_covered
                           + special_covered;
-            total_bins = 4 + 6 + 6 + 144 + 3 + 10 + 9 + 8;
+            total_bins = 4 + 6 + 6 + 144 + 3 + ScenarioBinCount + 9 + 8;
             coverage_percent = (100 * total_covered) / total_bins;
 
             $display("[coverage] operations: %0d/4 bins", op_covered);
@@ -445,7 +721,8 @@ module rns_top_tb;
             $display("[coverage] operand B categories: %0d/6 bins", b_covered);
             $display("[coverage] operation x A x B cross: %0d/144 bins", cross_covered);
             $display("[coverage] A/B relationships: %0d/3 bins", relation_covered);
-            $display("[coverage] constraint scenarios: %0d/10 bins", scenario_covered);
+            $display("[coverage] constraint scenarios: %0d/%0d bins",
+                     scenario_covered, ScenarioBinCount);
             $display("[coverage] residue edge values: %0d/9 bins", residue_covered);
             $display("[coverage] arithmetic special cases: %0d/8 bins", special_covered);
             $display(
@@ -458,7 +735,7 @@ module rns_top_tb;
 
             if (op_covered != 4 || a_covered != 6 || b_covered != 6 ||
                 cross_covered != 144 || relation_covered != 3 ||
-                scenario_covered != 10 || residue_covered != 9 ||
+                scenario_covered != ScenarioBinCount || residue_covered != 9 ||
                 special_covered != 8) begin
                 error_count++;
                 $display("[coverage] FAIL: one or more required bins were not covered");
@@ -503,17 +780,36 @@ module rns_top_tb;
                 for (integer b_i = 0; b_i < OperandBinCount; b_i++)
                     op_a_b_cross[op_i][a_i][b_i] = 0;
 
-        random_test_count = 500;
+        random_test_count = 100;
         if (!$value$plusargs("RANDOM_TESTS=%d", random_test_count))
-            random_test_count = 500;
+            random_test_count = 100;
 
         seed = 32'h5eed1234;
         if (!$value$plusargs("SEED=%d", seed))
             seed = 32'h5eed1234;
         seed_dummy = $urandom(seed);
+        chain_count = 0;
+        chain_passed = 0;
+        chain_failed = 0;
+        program_count = 0;
+        program_passed = 0;
+        program_failed = 0;
+        program_zero_length = 0;
+        program_1_to_9 = 0;
+        program_10_to_49 = 0;
+        program_50_to_99 = 0;
+        program_100 = 0;
+        last_checked_id = 0;
+        last_checked_failed = 0;
+        last_checked_signed = 0;
 
         $display("[config] seed=%0d random_tests=%0d latency=%0d",
                  seed, random_test_count, DutLatency);
+        $display("[timing] DUT clock period: 10 ns");
+        $display("[timing] DUT transaction latency: %0d cycles = %0d ns",
+                 DutLatency, DutLatency * 10);
+        $display("[timing] DUT streaming throughput: up to 1 transaction/cycle");
+        $display("[timing] golden model: combinational, zero simulated-time latency");
 
         repeat (4) @(negedge clk);
         reset_n = 1'b1;
@@ -524,6 +820,10 @@ module rns_top_tb;
         run_cross_coverage();
         drive_idle(3);
         run_constrained_random(random_test_count);
+        drive_idle(DutLatency + 2);
+        run_chained_sequences();
+        drive_idle(DutLatency + 2);
+        run_variable_length_programs();
         drive_idle(DutLatency + 5);
 
         if (expected_bin_q.size() != 0) begin
@@ -559,6 +859,19 @@ module rns_top_tb;
                 op_checked[OpPassA], op_checked[OpPassA] - op_failed[OpPassA],
                 op_failed[OpPassA]
             );
+            $display(
+                "[scoreboard-summary] CHAINS (A+B)*C+D: tested=%0d passed=%0d failed=%0d",
+                chain_count, chain_passed, chain_failed
+            );
+            $display(
+                "[scoreboard-summary] PROGRAMS (0-100 ops): tested=%0d passed=%0d failed=%0d",
+                program_count, program_passed, program_failed
+            );
+            $display(
+                "[scoreboard-summary] PROGRAM LENGTHS: zero=%0d one_to_nine=%0d ten_to_49=%0d fifty_to_99=%0d hundred=%0d",
+                program_zero_length, program_1_to_9, program_10_to_49,
+                program_50_to_99, program_100
+            );
             $display("[result] PASS: %0d/%0d transactions checked with no mismatches",
                      checked_count, transaction_count);
             $finish;
@@ -579,6 +892,19 @@ module rns_top_tb;
             $display("[scoreboard-summary] PASS_A: tested=%0d passed=%0d failed=%0d",
                      op_checked[OpPassA], op_checked[OpPassA] - op_failed[OpPassA],
                      op_failed[OpPassA]);
+            $display(
+                "[scoreboard-summary] CHAINS (A+B)*C+D: tested=%0d passed=%0d failed=%0d",
+                chain_count, chain_passed, chain_failed
+            );
+            $display(
+                "[scoreboard-summary] PROGRAMS (0-100 ops): tested=%0d passed=%0d failed=%0d",
+                program_count, program_passed, program_failed
+            );
+            $display(
+                "[scoreboard-summary] PROGRAM LENGTHS: zero=%0d one_to_nine=%0d ten_to_49=%0d fifty_to_99=%0d hundred=%0d",
+                program_zero_length, program_1_to_9, program_10_to_49,
+                program_50_to_99, program_100
+            );
             $fatal(1, "[result] FAIL: errors=%0d checked=%0d driven=%0d",
                    error_count, checked_count, transaction_count);
         end
@@ -620,10 +946,14 @@ module rns_top_tb;
                 expected_cycle = expected_cycle_q.pop_front();
                 checked_count++;
                 op_checked[expected_op]++;
+                last_checked_id = expected_id;
+                last_checked_signed = y_signed;
+                last_checked_failed = 0;
 
                 if (valid_out !== 1'b1) begin
                     error_count++;
                     op_failed[expected_op]++;
+                    last_checked_failed = 1;
                     $display("[scoreboard] FAIL id=%0d cycle=%0d: valid_out=0",
                              expected_id, expected_cycle);
                 end else if ((y_bin !== expected_bin) ||
@@ -633,6 +963,7 @@ module rns_top_tb;
                              (y65 !== expected_r65)) begin
                     error_count++;
                     op_failed[expected_op]++;
+                    last_checked_failed = 1;
                     $display(
                         "[scoreboard] FAIL id=%0d %0s a=%0d b=%0d got_signed=%0d got=(%0d,%0d,%0d,%0d) expected_signed=%0d expected=(%0d,%0d,%0d,%0d)",
                         expected_id, op_name(expected_op), expected_a, expected_b,

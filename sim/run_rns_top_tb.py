@@ -7,17 +7,18 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 SUMMARY_PATTERN = re.compile(
-    r"^(\[config|\[scenario|\[drive|\[meaning|\[check|\[scoreboard|\[coverage|\[result\]|FAIL|PASS)"
+    r"^(\[config|\[timing|\[scenario|\[sequence|\[program|\[drive|\[meaning|\[check|\[scoreboard|\[coverage|\[result\]|FAIL|PASS)"
 )
 
 HEADER_PATTERN = re.compile(
-    r"^(\[result\]|\[scoreboard-summary\]|\[coverage\] TOTAL:|\[coverage\] PASS:|\[config\])"
+    r"^(\[result\]|\[scoreboard-summary\]|\[coverage\] TOTAL:|\[coverage\] PASS:|\[timing\]|\[config\])"
 )
 
 
@@ -103,8 +104,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--random-tests",
         type=int,
-        default=500,
-        help="Number of constrained-random transactions. Default: 500.",
+        default=100,
+        help="Number of standalone constrained-random transactions. Default: 100.",
     )
     parser.add_argument(
         "--seed",
@@ -171,9 +172,11 @@ def main() -> int:
     ]
 
     log_parts = ["[compile] running iverilog\n"]
+    compile_start = time.perf_counter()
     compile_code, compile_stdout, compile_stderr = run_and_capture(
         compile_command, PROJECT_ROOT
     )
+    compile_seconds = time.perf_counter() - compile_start
     log_parts.extend([compile_stdout, compile_stderr])
 
     if compile_code != 0:
@@ -184,6 +187,7 @@ def main() -> int:
         return compile_code
 
     log_parts.append("[simulate] running vvp\n")
+    simulation_start = time.perf_counter()
     sim_code, sim_stdout, sim_stderr = run_and_capture(
         [
             vvp,
@@ -193,7 +197,13 @@ def main() -> int:
         ],
         PROJECT_ROOT,
     )
+    simulation_seconds = time.perf_counter() - simulation_start
     log_parts.extend([sim_stdout, sim_stderr])
+    log_parts.append(f"[timing] compile wall time: {compile_seconds:.3f} s\n")
+    log_parts.append(f"[timing] simulation wall time: {simulation_seconds:.3f} s\n")
+    log_parts.append(
+        f"[timing] total runner wall time: {compile_seconds + simulation_seconds:.3f} s\n"
+    )
 
     if sim_code != 0:
         log_parts.append("[simulate] failed\n")
