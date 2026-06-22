@@ -173,9 +173,11 @@ module rns_top (
     rns_63_64_65_to_binary_pipe u_to_binary (
         .clk     (clk),
         .reset_n (reset_n),
+        .valid_in (valid_a_rns & valid_b_rns),
         .r63     (result63_c),
         .r64     (result64_c),
         .r65     (result65_c),
+        .valid_out (),
         .x       (y_bin)
     );
 

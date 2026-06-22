@@ -1,11 +1,13 @@
 module rns_63_64_65_to_binary_pipe (
     input  logic        clk,
     input  logic        reset_n,
+    input  logic        valid_in,
 
     input  logic [5:0]  r63,   // valid range: 0..62
     input  logic [5:0]  r64,   // valid range: 0..63
     input  logic [6:0]  r65,   // valid range: 0..64
 
+    output logic        valid_out,
     output logic [17:0] x      // valid range: 0..262079
 );
 
@@ -137,19 +139,24 @@ module rns_63_64_65_to_binary_pipe (
     // Stage 1 registers
     // ------------------------------------------------------------
 
+    logic       valid_s1;
     logic [5:0] a_s1;
     logic [6:0] b_s1;
     logic [5:0] r64_s1;
 
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
-            a_s1   <= 6'd0;
-            b_s1   <= 7'd0;
-            r64_s1 <= 6'd0;
+            valid_s1 <= 1'b0;
+            a_s1     <= 6'd0;
+            b_s1     <= 7'd0;
+            r64_s1   <= 6'd0;
         end else begin
-            a_s1   <= a_c;
-            b_s1   <= b_c;
-            r64_s1 <= r64_c;
+            valid_s1 <= valid_in;
+            if (valid_in) begin
+                a_s1   <= a_c;
+                b_s1   <= b_c;
+                r64_s1 <= r64_c;
+            end
         end
     end
 
@@ -181,19 +188,24 @@ module rns_63_64_65_to_binary_pipe (
     // Stage 2 registers
     // ------------------------------------------------------------
 
+    logic       valid_s2;
     logic [5:0] a_s2;
     logic [6:0] t_s2;
     logic [5:0] r64_s2;
 
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
-            a_s2   <= 6'd0;
-            t_s2   <= 7'd0;
-            r64_s2 <= 6'd0;
+            valid_s2 <= 1'b0;
+            a_s2     <= 6'd0;
+            t_s2     <= 7'd0;
+            r64_s2   <= 6'd0;
         end else begin
-            a_s2   <= a_s1;
-            t_s2   <= t_c;
-            r64_s2 <= r64_s1;
+            valid_s2 <= valid_s1;
+            if (valid_s1) begin
+                a_s2   <= a_s1;
+                t_s2   <= t_c;
+                r64_s2 <= r64_s1;
+            end
         end
     end
 
@@ -226,9 +238,12 @@ module rns_63_64_65_to_binary_pipe (
 
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
-            x <= 18'd0;
+            valid_out <= 1'b0;
+            x         <= 18'd0;
         end else begin
-            x <= x_c;
+            valid_out <= valid_s2;
+            if (valid_s2)
+                x <= x_c;
         end
     end
 

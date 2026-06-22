@@ -26,6 +26,24 @@ module rns_top_tb;
     logic [5:0] y64;
     logic [6:0] y65;
 
+    logic program_load_valid;
+    logic [127:0] program_load_values;
+    logic program_load_ready;
+    logic program_load_done;
+    logic program_instruction_valid;
+    logic [1:0] program_instruction_op;
+    logic [2:0] program_destination;
+    logic [2:0] program_source_a;
+    logic [2:0] program_source_b;
+    logic program_instruction_ready;
+    logic program_instruction_done;
+    logic program_convert_valid;
+    logic [2:0] program_convert_source;
+    logic program_convert_ready;
+    logic program_result_valid;
+    logic [17:0] program_result_binary;
+    logic signed [17:0] program_result_signed;
+
     logic [17:0] golden_bin;
     logic signed [17:0] golden_signed;
     logic [5:0] golden_r63;
@@ -56,6 +74,31 @@ module rns_top_tb;
         .y63   (golden_r63),
         .y64   (golden_r64),
         .y65   (golden_r65)
+    );
+
+    rns_program_engine #(
+        .RegisterCount (8),
+        .AddressWidth  (3)
+    ) program_engine (
+        .clk               (clk),
+        .reset_n           (reset_n),
+        .load_valid        (program_load_valid),
+        .load_values       (program_load_values),
+        .load_ready        (program_load_ready),
+        .load_done         (program_load_done),
+        .instruction_valid (program_instruction_valid),
+        .instruction_op    (program_instruction_op),
+        .destination       (program_destination),
+        .source_a          (program_source_a),
+        .source_b          (program_source_b),
+        .instruction_ready (program_instruction_ready),
+        .instruction_done  (program_instruction_done),
+        .convert_valid     (program_convert_valid),
+        .convert_source    (program_convert_source),
+        .convert_ready     (program_convert_ready),
+        .result_valid      (program_result_valid),
+        .result_binary     (program_result_binary),
+        .result_signed     (program_result_signed)
     );
 
     logic [17:0] expected_bin_q[$];
@@ -101,6 +144,9 @@ module rns_top_tb;
     integer last_checked_id;
     integer last_checked_failed;
     logic signed [17:0] last_checked_signed;
+    logic [5:0] last_checked_r63;
+    logic [5:0] last_checked_r64;
+    logic [6:0] last_checked_r65;
 
     function automatic integer operand_bin(input logic signed [15:0] value);
         begin
@@ -392,6 +438,71 @@ module rns_top_tb;
         end
     endtask
 
+    task automatic issue_program_instruction(
+        input logic [1:0] operation,
+        input logic [2:0] destination_register,
+        input logic [2:0] source_register_a,
+        input logic [2:0] source_register_b
+    );
+        begin
+            wait (program_instruction_ready);
+            @(negedge clk);
+            program_instruction_op = operation;
+            program_destination = destination_register;
+            program_source_a = source_register_a;
+            program_source_b = source_register_b;
+            program_instruction_valid = 1'b1;
+            @(negedge clk);
+            program_instruction_valid = 1'b0;
+            wait (program_instruction_done);
+        end
+    endtask
+
+    task automatic run_parallel_input_program;
+        integer expected_result;
+        begin
+            // Program: ((a + b) * c - d) + e
+            // R0..R4 receive a..e simultaneously. R5/R6 are temporaries.
+            program_load_values = 128'd0;
+            program_load_values[0*16 +: 16] = 16'sd3;
+            program_load_values[1*16 +: 16] = 16'sd4;
+            program_load_values[2*16 +: 16] = 16'sd5;
+            program_load_values[3*16 +: 16] = 16'sd6;
+            program_load_values[4*16 +: 16] = 16'sd7;
+            expected_result = ((3 + 4) * 5 - 6) + 7;
+
+            $display("[scenario] parallel program input conversion and RNS register execution");
+            wait (program_load_ready);
+            @(negedge clk);
+            program_load_valid = 1'b1;
+            @(negedge clk);
+            program_load_valid = 1'b0;
+            wait (program_load_done);
+
+            issue_program_instruction(OpAdd, 3'd5, 3'd0, 3'd1);
+            issue_program_instruction(OpMul, 3'd6, 3'd5, 3'd2);
+            issue_program_instruction(OpSub, 3'd5, 3'd6, 3'd3);
+            issue_program_instruction(OpAdd, 3'd6, 3'd5, 3'd4);
+
+            wait (program_convert_ready);
+            @(negedge clk);
+            program_convert_source = 3'd6;
+            program_convert_valid = 1'b1;
+            @(negedge clk);
+            program_convert_valid = 1'b0;
+            wait (program_result_valid);
+            #1;
+
+            if (program_result_signed !== expected_result) begin
+                error_count++;
+                $display("[program-engine] FAIL: got=%0d expected=%0d",
+                         program_result_signed, expected_result);
+            end else begin
+                $display("[program-engine] PASS: five inputs converted in parallel, four RNS instructions, one final CRT conversion, result=%0d",
+                         program_result_signed);
+            end
+        end
+    endtask
     task automatic run_operation_program(
         input integer length,
         input logic signed [15:0] initial_value
@@ -760,6 +871,15 @@ module rns_top_tb;
         op_sel = OpAdd;
         a_bin = 16'd0;
         b_bin = 16'd0;
+        program_load_valid = 1'b0;
+        program_load_values = 128'd0;
+        program_instruction_valid = 1'b0;
+        program_instruction_op = OpAdd;
+        program_destination = 3'd0;
+        program_source_a = 3'd0;
+        program_source_b = 3'd0;
+        program_convert_valid = 1'b0;
+        program_convert_source = 3'd0;
         reset_n = 1'b0;
 
         for (index = 0; index < 4; index++) op_hits[index] = 0;
@@ -802,6 +922,9 @@ module rns_top_tb;
         last_checked_id = 0;
         last_checked_failed = 0;
         last_checked_signed = 0;
+        last_checked_r63 = 0;
+        last_checked_r64 = 0;
+        last_checked_r65 = 0;
 
         $display("[config] seed=%0d random_tests=%0d latency=%0d",
                  seed, random_test_count, DutLatency);
@@ -824,6 +947,8 @@ module rns_top_tb;
         run_chained_sequences();
         drive_idle(DutLatency + 2);
         run_variable_length_programs();
+        drive_idle(DutLatency + 2);
+        run_parallel_input_program();
         drive_idle(DutLatency + 5);
 
         if (expected_bin_q.size() != 0) begin
@@ -948,6 +1073,9 @@ module rns_top_tb;
                 op_checked[expected_op]++;
                 last_checked_id = expected_id;
                 last_checked_signed = y_signed;
+                last_checked_r63 = y63;
+                last_checked_r64 = y64;
+                last_checked_r65 = y65;
                 last_checked_failed = 0;
 
                 if (valid_out !== 1'b1) begin

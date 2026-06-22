@@ -15,9 +15,9 @@
 [scoreboard-summary] PROGRAMS (0-100 ops): tested=200 passed=200 failed=0
 [scoreboard-summary] PROGRAM LENGTHS: zero=3 one_to_nine=13 ten_to_49=70 fifty_to_99=112 hundred=2
 [result] PASS: 11098/11098 transactions checked with no mismatches
-[timing] compile wall time: 0.095 s
-[timing] simulation wall time: 1.569 s
-[timing] total runner wall time: 1.664 s
+[timing] compile wall time: 0.212 s
+[timing] simulation wall time: 2.181 s
+[timing] total runner wall time: 2.393 s
 ==================================================
 
 DETAILED SCOREBOARD AND STIMULUS
@@ -33926,6 +33926,8 @@ DETAILED SCOREBOARD AND STIMULUS
 [meaning 11098] -33 * -1 -> signed 33, canonical 33
 [check 11098] PASS id=11098 MUL signed=33 canonical=33 residues=(33,33,33)
 [program 200] PASS: length=22 final=33
+[scenario] parallel program input conversion and RNS register execution
+[program-engine] PASS: five inputs converted in parallel, four RNS instructions, one final CRT conversion, result=36
 [coverage] operations: 4/4 bins
 [coverage] operand A categories: 6/6 bins
 [coverage] operand B categories: 6/6 bins
@@ -33946,6 +33948,6 @@ DETAILED SCOREBOARD AND STIMULUS
 [scoreboard-summary] PROGRAMS (0-100 ops): tested=200 passed=200 failed=0
 [scoreboard-summary] PROGRAM LENGTHS: zero=3 one_to_nine=13 ten_to_49=70 fifty_to_99=112 hundred=2
 [result] PASS: 11098/11098 transactions checked with no mismatches
-[timing] compile wall time: 0.095 s
-[timing] simulation wall time: 1.569 s
-[timing] total runner wall time: 1.664 s
+[timing] compile wall time: 0.212 s
+[timing] simulation wall time: 2.181 s
+[timing] total runner wall time: 2.393 s
